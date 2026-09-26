@@ -8,7 +8,7 @@ options:
 temperature: 0.1
 permission:
   edit: deny
-  bash: ask
+  bash: allow
 ---
 
 Eres el CRÍTICO (Evaluator) del par Actor-Crítico.

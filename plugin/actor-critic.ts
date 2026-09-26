@@ -5,6 +5,10 @@ type Options = {
   criticAgent?: string
   actorModel?: string
   criticModel?: string
+  inlineActorAgent?: string
+  inlineCriticAgent?: string
+  inlineActorModel?: string
+  inlineCriticModel?: string
   maxIterations?: number
   maxDiffChars?: number
   keepCriticSession?: boolean
@@ -17,7 +21,10 @@ const toModelRef = (value?: string): { providerID: string; modelID: string } | u
   return { providerID: value.slice(0, i), modelID: value.slice(i + 1) }
 }
 
+type Mode = "session" | "inline"
+
 type State = {
+  mode: Mode
   original: string
   iterations: number
   lastAssistantID?: string
@@ -44,8 +51,12 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
   const opts = (rawOptions ?? {}) as Options
   const actorAgent = opts.actorAgent ?? "actor-managed"
   const criticAgent = opts.criticAgent ?? "critic"
+  const inlineActorAgent = opts.inlineActorAgent
+  const inlineCriticAgent = opts.inlineCriticAgent ?? "critic"
   const actorModel = toModelRef(opts.actorModel)
   const criticModel = toModelRef(opts.criticModel)
+  const inlineActorModel = toModelRef(opts.inlineActorModel)
+  const inlineCriticModel = toModelRef(opts.inlineCriticModel)
   const maxIterations = opts.maxIterations ?? 3
   const maxDiffChars = opts.maxDiffChars ?? 40000
   const keepCriticSession = opts.keepCriticSession ?? false
@@ -251,12 +262,61 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
     await send(actorSessionID, actorAgent, fixPrompt(last.text), actorModel)
   }
 
+  const reviewActorInline = async (sessionID: string, st: State) => {
+    const last = await lastAssistant(sessionID)
+    if (!last) return
+    if (last.info.id === st.lastAssistantID) return
+    st.lastAssistantID = last.info.id
+
+    if (last.info.error) {
+      st.done = true
+      await toast("El modelo devolvió un error; se detiene el bucle.", "error")
+      return
+    }
+
+    const diff = await collectDiff(sessionID)
+    st.awaiting = "critic"
+    await send(sessionID, inlineCriticAgent, criticPrompt(st.original, diff), inlineCriticModel)
+  }
+
+  const processCritiqueInline = async (sessionID: string, st: State) => {
+    const last = await lastAssistant(sessionID)
+    if (!last || last.info.id === st.lastAssistantID) return
+    st.lastAssistantID = last.info.id
+
+    if (approved(last.text)) {
+      st.done = true
+      await toast(`Aprobado tras ${st.iterations} iteración(es).`, "success")
+      return
+    }
+
+    st.iterations += 1
+    if (st.iterations > maxIterations) {
+      st.done = true
+      await toast(
+        `Sin aprobación tras ${maxIterations} iteraciones; revisa los hallazgos.`,
+        "warning",
+      )
+      return
+    }
+
+    st.awaiting = "actor"
+    await send(sessionID, inlineActorAgent ?? actorAgent, fixPrompt(last.text), inlineActorModel)
+  }
+
   return {
     "chat.message": async (msg, output) => {
-      if (msg.agent !== actorAgent) return
+      const mode: Mode | undefined =
+        inlineActorAgent && msg.agent === inlineActorAgent
+          ? "inline"
+          : msg.agent === actorAgent
+            ? "session"
+            : undefined
+      if (!mode) return
       const existing = states.get(msg.sessionID)
       if (existing && !existing.done) return
       states.set(msg.sessionID, {
+        mode,
         original: readText(output.parts as any[]),
         iterations: 0,
         awaiting: "actor",
@@ -285,7 +345,32 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
       }
 
       const st = states.get(sessionID)
-      if (!st || st.done || st.processing || st.awaiting !== "actor") return
+      if (!st || st.done || st.processing) return
+
+      if (st.mode === "inline") {
+        if (st.awaiting === "actor") {
+          st.processing = true
+          try {
+            await reviewActorInline(sessionID, st)
+          } catch (error) {
+            await toast(`Error en el bucle Actor-Critic: ${String(error)}`, "error")
+          } finally {
+            st.processing = false
+          }
+        } else {
+          st.processing = true
+          try {
+            await processCritiqueInline(sessionID, st)
+          } catch (error) {
+            await toast(`Error al procesar la crítica: ${String(error)}`, "error")
+          } finally {
+            st.processing = false
+          }
+        }
+        return
+      }
+
+      if (st.awaiting !== "actor") return
       st.processing = true
       try {
         await reviewActor(sessionID, st)

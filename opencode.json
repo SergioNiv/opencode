@@ -43,6 +43,7 @@
         "maxIterations": 3,
         "actorAgent": "actor-managed",
         "criticAgent": "critic",
+        "inlineActorAgent": "actor-managed-inline",
         "maxDiffChars": 40000,
         "keepCriticSession": false
       }
