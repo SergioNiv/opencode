@@ -111,6 +111,8 @@ de modo que solo te queda la sesión **padre** (la del Actor) para continuar.
       "maxIterations": 3,
       "actorAgent": "actor-managed",
       "criticAgent": "critic",
+      "actorModel": "llama-local/qwen3.8",
+      "criticModel": "deepseek/deepseek-flash",
       "maxDiffChars": 40000,
       "keepCriticSession": false
     }
@@ -123,8 +125,14 @@ de modo que solo te queda la sesión **padre** (la del Actor) para continuar.
 | `maxIterations`      | `3`             | Correcciones máximas antes de parar.                               |
 | `actorAgent`         | `actor-managed` | Agente que arranca el bucle.                                       |
 | `criticAgent`        | `critic`        | Agente evaluador.                                                  |
+| `actorModel`         | (el del agente) | Fuerza el modelo del Actor (formato `proveedor/modelo`).           |
+| `criticModel`        | (el del agente) | Fuerza el modelo del Crítico (formato `proveedor/modelo`).         |
 | `maxDiffChars`       | `40000`         | Tamaño máximo del diff enviado al crítico (se trunca si excede).   |
 | `keepCriticSession`  | `false`         | Si `true`, no borra la sesión hija del crítico (útil para depurar).|
+
+> `actorModel`/`criticModel` son **opcionales**: si los omites, se usa el `model:`
+> definido en el archivo del agente. Al forzarlos aquí, ten en cuenta que la
+> `variant` del agente puede no aplicarse (ver la sección “Cambiar el modelo”).
 
 **Ventaja / límite:** el bucle es determinista, no depende del modelo local y
 gasta menos tokens cloud (input del crítico acotado). A cambio, el crítico solo
@@ -148,10 +156,78 @@ sesión **padre** (donde escribiste el mensaje). Si activas
 
 ---
 
+## Cambiar el modelo del Actor y del Crítico
+
+Hay tres formas, de la más permanente a la más puntual.
+
+### 1. Por agente (recomendado)
+
+Edita el campo `model:` en el archivo del agente. El formato es
+`proveedor/modelo`:
+
+| Agente          | Archivo                     | Modelo actual             |
+| --------------- | --------------------------- | ------------------------- |
+| Actor (var. A)  | `agent/actor.md`            | `llama-local/qwen3.8`     |
+| Actor (var. B)  | `agent/actor-managed.md`    | `llama-local/qwen3.8`     |
+| Crítico         | `agent/critic.md`           | `deepseek/deepseek-flash` |
+
+Ejemplo para cambiar el Crítico a otro modelo:
+
+```yaml
+---
+model: deepseek/deepseek-reasoner
+variant: max
+---
+```
+
+- El `model:` del agente **manda** sobre el modelo global/sesión.
+- El campo `variant:` selecciona una de las `variants` del modelo definidas en
+  `opencode.json` (p. ej. `max`, `high`, `low`). Es la forma de fijar el esfuerzo
+  de razonamiento (el Crítico ya usa `variant: max`).
+- Requiere **reiniciar opencode**.
+
+### 2. Por plugin (solo variante B, sin editar agentes)
+
+Añade `actorModel` y/o `criticModel` a las opciones del plugin en
+`opencode.json`:
+
+```json
+[
+  "./plugin/actor-critic.ts",
+  {
+    "actorModel": "llama-local/qwen3.8",
+    "criticModel": "deepseek/deepseek-flash"
+  }
+]
+```
+
+- Formato `proveedor/modelo`.
+- Si se omiten, el plugin usa el `model:` del agente correspondiente.
+- Requiere **reiniciar opencode**.
+- Ojo: al forzar el modelo desde el plugin, la **`variant` del agente puede no
+  aplicarse**. Si necesitas el Crítico en `max`, deja
+  `options.reasoningEffort: max` en `agent/critic.md` (ya está puesto).
+
+### 3. Puntual en la TUI (solo Actor primario)
+
+- Puedes cambiar el modelo de la sesión con el selector de modelos de la TUI.
+- Pero si el agente define `model:`, ese gana. Para que el Actor use el modelo
+  que elijas en la TUI, **quita el campo `model:`** de `actor.md` /
+  `actor-managed.md` (entonces hereda el modelo por defecto/sesión).
+- El Crítico **no** se controla desde el selector: lo lanza el Actor (var. A) o
+  el plugin (var. B), y su modelo sale de `critic.md` o de `criticModel`. Para
+  cambiarlo puntualmente, usa la opción 1 o 2.
+
+### Añadir modelos o variantes nuevos
+
+Los modelos disponibles son los definidos en `provider.<id>.models` de
+`opencode.json`. Ahí mismo defines sus `variants` (p. ej. `reasoningEffort`).
+Tras añadir uno, úsalo en el agente como `proveedor/modelo`.
+
+---
+
 ## Personalización
 
-- **Cambiar modelos:** edita `model:` en `agent/actor.md`,
-  `agent/actor-managed.md` y `agent/critic.md`.
 - **Cambiar el criterio del crítico:** edita el prompt o el formato de salida en
   `agent/critic.md`. El plugin considera aprobado cuando aparece
   `VEREDICTO: APROBADO` (regex `VEREDICTO\s*:\s*APROBADO`, sin distinguir

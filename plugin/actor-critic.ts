@@ -3,9 +3,18 @@ import type { Plugin } from "@opencode-ai/plugin"
 type Options = {
   actorAgent?: string
   criticAgent?: string
+  actorModel?: string
+  criticModel?: string
   maxIterations?: number
   maxDiffChars?: number
   keepCriticSession?: boolean
+}
+
+const toModelRef = (value?: string): { providerID: string; modelID: string } | undefined => {
+  if (!value) return undefined
+  const i = value.indexOf("/")
+  if (i < 0) return undefined
+  return { providerID: value.slice(0, i), modelID: value.slice(i + 1) }
 }
 
 type State = {
@@ -35,6 +44,8 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
   const opts = (rawOptions ?? {}) as Options
   const actorAgent = opts.actorAgent ?? "actor-managed"
   const criticAgent = opts.criticAgent ?? "critic"
+  const actorModel = toModelRef(opts.actorModel)
+  const criticModel = toModelRef(opts.criticModel)
   const maxIterations = opts.maxIterations ?? 3
   const maxDiffChars = opts.maxDiffChars ?? 40000
   const keepCriticSession = opts.keepCriticSession ?? false
@@ -71,11 +82,20 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
     return undefined
   }
 
-  const send = async (sessionID: string, agent: string, text: string) => {
+  const send = async (
+    sessionID: string,
+    agent: string,
+    text: string,
+    model?: { providerID: string; modelID: string },
+  ) => {
     await client.session.promptAsync({
       path: { id: sessionID },
       query: { directory },
-      body: { agent, parts: [{ type: "text", text }] },
+      body: {
+        agent,
+        parts: [{ type: "text", text }],
+        ...(model ? { model } : {}),
+      },
     })
   }
 
@@ -196,7 +216,7 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
     const diff = await collectDiff(actorSessionID)
     criticToActor.set(criticSessionID, actorSessionID)
     st.awaiting = "critic"
-    await send(criticSessionID, criticAgent, criticPrompt(st.original, diff))
+    await send(criticSessionID, criticAgent, criticPrompt(st.original, diff), criticModel)
   }
 
   const processCritique = async (criticSessionID: string, actorSessionID: string, st: State) => {
@@ -228,7 +248,7 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
     }
 
     st.awaiting = "actor"
-    await send(actorSessionID, actorAgent, fixPrompt(last.text))
+    await send(actorSessionID, actorAgent, fixPrompt(last.text), actorModel)
   }
 
   return {
