@@ -10,7 +10,6 @@ En esta configuración:
 
 | Rol     | Agente                  | Modelo                   | Modo       |
 | ------- | ----------------------- | ------------------------ | ---------- |
-| Actor   | `actor`                 | `llama-local/qwen3.8`    | primary    |
 | Actor   | `actor-managed`         | `llama-local/qwen3.8`    | primary    |
 | Actor   | `actor-managed-inline`  | `llama-local/qwen3.8`    | primary    |
 | Crítico | `critic`                | `deepseek/deepseek-flash`| all        |
@@ -19,14 +18,12 @@ Hay **un solo Crítico** (`critic`), que se ejecuta siempre con la variante
 **`max`** (`reasoningEffort: max`) definida en su agente. Lo que cambia entre
 variantes no es el crítico, sino **cómo el plugin lo invoca**.
 
-Hay **tres variantes** del mismo patrón:
+Hay **dos variantes** del mismo patrón:
 
-1. **Variante A — subagente (manual):** el propio Actor decide cuándo llamar al
-   Crítico usando la herramienta `task`. No requiere plugin.
-2. **Variante B1 — plugin, sesión hija (automática):** el plugin engancha el
+1. **Variante 1 — plugin, sesión hija (automática):** el plugin engancha el
    final de cada turno del Actor y lanza al Crítico en una **sesión hija**
    desechable, en bucle, hasta que aprueba. No depende del modelo local.
-3. **Variante B2 — plugin, misma sesión (automática):** igual que B1, pero el
+2. **Variante 2 — plugin, misma sesión (automática):** igual que la 1, pero el
    plugin **inyecta el prompt del Crítico en la propia sesión del Actor**, así
    que ves el prompt y la respuesta en la UI.
 
@@ -39,37 +36,15 @@ Hay **tres variantes** del mismo patrón:
 - Reiniciar opencode tras crear/editar cualquier agente, comando, plugin o
   `opencode.json`: la configuración **no** se recarga en caliente.
 
----
-
-## Variante A — subagente (manual)
-
-**Archivos**
-
-- `~/.config/opencode/agent/actor.md` — primario, `llama-local/qwen3.8`.
-- `~/.config/opencode/agent/critic.md` — subagente, `deepseek/deepseek-flash`,
-  solo lectura (`edit: deny`).
-- `~/.config/opencode/command/ac.md` — comando `/ac`.
-
-**Cómo funciona**
-
-1. El Actor planifica e implementa.
-2. Al tener una primera versión, llama al subagente `critic` con la herramienta
-   `task` (el prompt del Actor lo obliga).
-3. El Crítico responde `VEREDICTO: APROBADO | CAMBIOS REQUERIDOS` + lista de
-   hallazgos.
-4. El Actor aplica las correcciones y repite (máx. 3 iteraciones).
-
-**Uso**
-
-- `/ac <tarea>` — arranca directamente en el agente `actor`.
-- O pulsa `Tab`, selecciona el agente **actor** y escribe la tarea.
-
-**Ventaja / límite:** funciona sin plugin, pero la calidad del bucle depende de
-que el modelo local (27B) siga las instrucciones y llame al crítico.
+> **El crítico lo lanza solo el plugin.** En `opencode.json` la herramienta
+> `task` tiene `"critic": "deny"` (denegado), así que ningún modelo puede
+> invocarlo por su cuenta: su `description` ni siquiera aparece en el prompt de
+> `task`. Solo lo lanzan las variantes 1 y 2 (`/acp`, `/acpi`), que no usan
+> `task` sino la API de sesiones.
 
 ---
 
-## Variante B1 — plugin, sesión hija (automática)
+## Variante 1 — plugin, sesión hija (automática)
 
 **Archivos**
 
@@ -153,7 +128,7 @@ sesión **padre** (donde escribiste el mensaje). Si activas
 
 ---
 
-## Variante B2 — plugin, crítica en la misma sesión
+## Variante 2 — plugin, crítica en la misma sesión
 
 **Archivos**
 
@@ -161,7 +136,7 @@ sesión **padre** (donde escribiste el mensaje). Si activas
   `inline`.
 - `~/.config/opencode/agent/actor-managed-inline.md` — actor sin instrucción de
   `task`, mismo modelo local.
-- `~/.config/opencode/agent/critic.md` — el **mismo** crítico que B1.
+- `~/.config/opencode/agent/critic.md` — el **mismo** crítico que la variante 1.
 - `~/.config/opencode/command/acpi.md` — comando `/acpi`.
 
 **Cómo funciona**
@@ -177,12 +152,12 @@ sesión **padre** (donde escribiste el mensaje). Si activas
      repite.
 4. Se detiene al aprobar o al superar `maxIterations`, con un toast.
 
-**Diferencia con B1**
+**Diferencia con la variante 1**
 
 - **Ventaja:** todo el bucle queda **visible** en la sesión del Actor; se ve
   exactamente qué prompt recibe el Crítico.
 - **Coste:** el Crítico ve **todo el historial** de la sesión (no solo requisitos
-  + diff), así que gasta más tokens cloud que B1.
+  + diff), así que gasta más tokens cloud que la variante 1.
 
 **Uso**
 
@@ -200,24 +175,22 @@ sesión **padre** (donde escribiste el mensaje). Si activas
 
 | Opción               | Default         | Descripción                                                        |
 | -------------------- | --------------- | ------------------------------------------------------------------ |
-| `inlineActorAgent`   | (desactivado)   | Activa la variante B2 para ese agente. Si se omite, B2 no existe.  |
-| `inlineCriticAgent`  | `critic`        | Crítico de B2 (se inyecta en la sesión del Actor).                 |
-| `inlineActorModel`   | (el del agente) | Fuerza el modelo del Actor de B2.                                  |
-| `inlineCriticModel`  | (el del agente) | Fuerza el modelo del Crítico de B2.                                |
+| `inlineActorAgent`   | (desactivado)   | Activa la variante 2 para ese agente. Si se omite, no existe.      |
+| `inlineCriticAgent`  | `critic`        | Crítico de la variante 2 (se inyecta en la sesión del Actor).      |
+| `inlineActorModel`   | (el del agente) | Fuerza el modelo del Actor de la variante 2.                       |
+| `inlineCriticModel`  | (el del agente) | Fuerza el modelo del Crítico de la variante 2.                     |
 
-> `actorAgent`/`criticAgent` son las opciones de B1 y `inline*` las de B2; ambas
-> variantes conviven en la **misma** instancia del plugin y comparten el crítico
-> `critic`.
+> `actorAgent`/`criticAgent` son las opciones de la variante 1 e `inline*` las de
+> la variante 2; ambas conviven en la **misma** instancia del plugin y comparten
+> el crítico `critic`.
 
 ---
 
 ## ¿Cuál elegir?
 
-- Modelo local poco fiable siguiendo instrucciones → **Variante B1 o B2** (plugin).
-- Priorizas gastar menos tokens cloud → **Variante B1** (crítico en sesión hija).
-- Prefieres **ver el prompt del crítico** en la UI → **Variante B2** (misma sesión).
-- Quieres algo simple, sin plugins, con control manual → **Variante A**.
-- Las tres conviven: `/ac` usa A, `/acp` usa B1 y `/acpi` usa B2.
+- Priorizas gastar menos tokens cloud → **Variante 1** (crítico en sesión hija).
+- Prefieres **ver el prompt del crítico** en la UI → **Variante 2** (misma sesión).
+- Ambas conviven: `/acp` usa la variante 1 y `/acpi` la variante 2.
 
 ---
 
@@ -232,9 +205,8 @@ Edita el campo `model:` en el archivo del agente. El formato es
 
 | Agente          | Archivo                         | Modelo actual             |
 | --------------- | ------------------------------- | ------------------------- |
-| Actor (var. A)  | `agent/actor.md`                | `llama-local/qwen3.8`     |
-| Actor (var. B1) | `agent/actor-managed.md`        | `llama-local/qwen3.8`     |
-| Actor (var. B2) | `agent/actor-managed-inline.md` | `llama-local/qwen3.8`     |
+| Actor (var. 1)  | `agent/actor-managed.md`        | `llama-local/qwen3.8`     |
+| Actor (var. 2)  | `agent/actor-managed-inline.md` | `llama-local/qwen3.8`     |
 | Crítico (todas) | `agent/critic.md`               | `deepseek/deepseek-flash` |
 
 Ejemplo para cambiar el Crítico a otro modelo:
@@ -252,10 +224,11 @@ variant: max
   de razonamiento (el Crítico ya usa `variant: max`).
 - Requiere **reiniciar opencode**.
 
-### 2. Por plugin (variantes B1/B2, sin editar agentes)
+### 2. Por plugin (variantes 1 y 2, sin editar agentes)
 
-Añade `actorModel`/`criticModel` (B1) y/o `inlineActorModel`/`inlineCriticModel`
-(B2) a las opciones del plugin en `opencode.json`:
+Añade `actorModel`/`criticModel` (variante 1) y/o
+`inlineActorModel`/`inlineCriticModel` (variante 2) a las opciones del plugin en
+`opencode.json`:
 
 ```json
 [
@@ -278,10 +251,10 @@ Añade `actorModel`/`criticModel` (B1) y/o `inlineActorModel`/`inlineCriticModel
 
 - Puedes cambiar el modelo de la sesión con el selector de modelos de la TUI.
 - Pero si el agente define `model:`, ese gana. Para que el Actor use el modelo
-  que elijas en la TUI, **quita el campo `model:`** de `actor.md` /
-  `actor-managed.md` (entonces hereda el modelo por defecto/sesión).
-- El Crítico **no** se controla desde el selector: lo lanza el Actor (var. A) o
-  el plugin (var. B), y su modelo sale de `critic.md` o de `criticModel`. Para
+  que elijas en la TUI, **quita el campo `model:`** de `actor-managed.md` /
+  `actor-managed-inline.md` (entonces hereda el modelo por defecto/sesión).
+- El Crítico **no** se controla desde el selector: lo lanza el plugin, y su
+  modelo sale de `critic.md` o de `criticModel`/`inlineCriticModel`. Para
   cambiarlo puntualmente, usa la opción 1 o 2.
 
 ### Añadir modelos o variantes nuevos
@@ -295,7 +268,7 @@ Tras añadir uno, úsalo en el agente como `proveedor/modelo`.
 ## Personalización
 
 - **Cambiar el criterio del crítico:** edita el prompt o el formato de salida en
-  `agent/critic.md` (afecta a las tres variantes). El plugin considera aprobado
+  `agent/critic.md` (afecta a ambas variantes). El plugin considera aprobado
   cuando aparece `VEREDICTO: APROBADO` (regex `VEREDICTO\s*:\s*APROBADO`, sin
   distinguir mayúsculas). Si cambias ese texto, actualiza también el regex en
   `plugin/actor-critic.ts`.
@@ -314,10 +287,10 @@ Tras añadir uno, úsalo en el agente como `proveedor/modelo`.
   inspeccionar puede usar `bash`, que está en `allow` (`critic.md`), así que no
   pide confirmación. Nota: `bash: allow` no impide escrituras vía shell; la
   restricción de solo lectura es por prompt.
-- **El bucle no avanza en la variante B1:** confirma que el mensaje inicial usó el
+- **El bucle no avanza en la variante 1:** confirma que el mensaje inicial usó el
   agente `actor-managed` (p. ej. vía `/acp`); el plugin solo se arma con ese
   agente.
-- **El bucle no avanza en la variante B2:** confirma que el mensaje inicial usó el
+- **El bucle no avanza en la variante 2:** confirma que el mensaje inicial usó el
   agente `actor-managed-inline` (p. ej. vía `/acpi`), y que `inlineActorAgent`
   está configurado en `opencode.json`.
 - **Aparecen sesiones `[critic] revisión N`:** solo deberían quedar si pusiste

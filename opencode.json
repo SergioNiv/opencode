@@ -12,6 +12,10 @@
       "~/.docker/config.json": "deny",
       "~/.netrc": "deny"
     },
+    "task": {
+      "*": "allow",
+      "critic": "deny"
+    },
     "bash": {
       "*": "allow",
       "rm -rf *": "deny",
