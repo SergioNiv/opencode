@@ -23,6 +23,9 @@ const toModelRef = (value?: string): { providerID: string; modelID: string } | u
 
 type Mode = "session" | "inline"
 
+/** `diff` = hay contenido; `statsonly` = solo lista de archivos; `empty` = nada. */
+type Diff = { text: string; kind: "diff" | "statsonly" | "empty" }
+
 type State = {
   mode: Mode
   original: string
@@ -31,6 +34,7 @@ type State = {
   awaiting: "actor" | "critic"
   done: boolean
   processing: boolean
+  baseTitle?: string
 }
 
 const readText = (parts: any[]): string =>
@@ -40,7 +44,13 @@ const readText = (parts: any[]): string =>
     .join("\n")
     .trim()
 
-const approved = (text: string): boolean => /VEREDICTO\s*:\s*APROBADO/i.test(text)
+// Anclado a línea completa: si el crítico cita o niega la cadena dentro de su
+// explicación ("no procede VEREDICTO: APROBADO…"), no debe contar como aprobado.
+// Tampoco aceptamos sufijos tipo "APROBADO CON RESERVAS".
+const approved = (text: string): boolean => /^\s*VEREDICTO\s*:\s*APROBADO\s*$/im.test(text)
+
+const NOT_APPROVED = "⛔ NO APROBADO"
+const APPROVED = "✅ APROBADO"
 
 const short = (text: string, max = 40): string => {
   const oneLine = text.replace(/\s+/g, " ").trim()
@@ -134,6 +144,40 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
     }
   }
 
+  // El SDK no permite insertar mensajes sintéticos, así que el veredicto final
+  // se marca en el título de la sesión: es lo único que sobrevive al bucle y
+  // queda visible en el listado de sesiones una vez el toast ha desaparecido.
+  const VERDICT_SUFFIX = /\s*—\s*\d+\s+iteraciones?,\s*hallazgos abiertos\s*$/
+
+  const stripVerdictMarkers = (title: string): string => {
+    let base = title.split("\n")[0].trim()
+    for (const marker of [APPROVED, NOT_APPROVED]) {
+      if (base.startsWith(marker)) base = base.slice(marker.length)
+    }
+    return base
+      .replace(VERDICT_SUFFIX, "")
+      .replace(/^[\s\-—:]+/, "")
+      .trim()
+  }
+
+  const markVerdict = async (sessionID: string, st: State, ok: boolean) => {
+    const prefix = ok ? APPROVED : NOT_APPROVED
+    try {
+      if (st.baseTitle === undefined) {
+        const res: any = await client.session.get({ path: { id: sessionID }, query: { directory } })
+        st.baseTitle = stripVerdictMarkers(res?.data?.title ?? "") || short(st.original, 60)
+      }
+      const suffix = ok ? "" : ` — ${st.iterations} iteraciones, hallazgos abiertos`
+      await client.session.update({
+        path: { id: sessionID },
+        query: { directory },
+        body: { title: `${prefix} ${st.baseTitle}${suffix}`.slice(0, 200) },
+      })
+    } catch {
+      /* el título es cosmético; nunca debe romper el bucle */
+    }
+  }
+
   const gitText = async (cmd: ReturnType<typeof $>): Promise<string> => {
     try {
       const out = await cmd.cwd(directory).quiet().nothrow()
@@ -143,14 +187,54 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
     }
   }
 
-  const collectDiff = async (sessionID: string): Promise<string> => {
+  const MAX_UNTRACKED_FILES = 25
+  const MAX_UNTRACKED_FILE_CHARS = 8000
+
+  const readUntracked = async (files: string[]): Promise<string> => {
+    const shown = files.slice(0, MAX_UNTRACKED_FILES)
+    const blocks: string[] = []
+
+    for (const file of shown) {
+      const res = await $`cat -- ${file}`.cwd(directory).quiet().nothrow()
+      if (res.exitCode !== 0) {
+        const reason = res.stderr.toString().trim() || `exit ${res.exitCode}`
+        blocks.push(`--- ARCHIVO NUEVO: ${file} ---\n(no se pudo leer: ${reason})`)
+        continue
+      }
+      let body = res.stdout.toString()
+      if (body.includes("\u0000")) {
+        body = "(archivo binario; contenido omitido)"
+      } else if (body.length > MAX_UNTRACKED_FILE_CHARS) {
+        body = `${body.slice(0, MAX_UNTRACKED_FILE_CHARS)}\n... [truncado a ${MAX_UNTRACKED_FILE_CHARS} caracteres]`
+      }
+      blocks.push(`--- ARCHIVO NUEVO: ${file} ---\n${body}`)
+    }
+
+    if (files.length > shown.length) {
+      blocks.push(
+        `--- ${files.length - shown.length} ARCHIVO(S) NUEVO(S) MÁS, SIN MOSTRAR ---\n` +
+          files
+            .slice(shown.length)
+            .map((f) => `- ${f}`)
+            .join("\n") +
+          "\nÁbrelos con `read` antes de emitir el veredicto.",
+      )
+    }
+
+    return blocks.join("\n\n")
+  }
+
+  const collectDiff = async (sessionID: string): Promise<Diff> => {
     let diff = await gitText($`git diff --no-color --unified=3 HEAD`)
     if (!diff.trim()) diff = await gitText($`git diff --no-color --unified=3`)
-    const untracked = (await gitText($`git ls-files --others --exclude-standard`)).trim()
+    const untracked = (await gitText($`git ls-files --others --exclude-standard`))
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
 
     const parts: string[] = []
     if (diff.trim()) parts.push(diff.trim())
-    if (untracked) parts.push(`ARCHIVOS NUEVOS (sin trackear):\n${untracked}`)
+    if (untracked.length) parts.push(await readUntracked(untracked))
 
     if (parts.length === 0) {
       try {
@@ -164,21 +248,28 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
             "ARCHIVOS MODIFICADOS:\n" +
               files.map((f) => `- ${f.file} (+${f.additions} -${f.deletions})`).join("\n"),
           )
+          let result = parts.join("\n\n")
+          if (result.length > maxDiffChars) {
+            result = `${result.slice(0, maxDiffChars)}\n\n... [diff truncado a ${maxDiffChars} caracteres]`
+          }
+          return { text: result, kind: "statsonly" }
         }
       } catch {
         /* sin diff disponible */
       }
     }
 
+    if (parts.length === 0) return { text: "(sin cambios detectados por git)", kind: "empty" }
+
     let result = parts.join("\n\n")
     if (result.length > maxDiffChars) {
       result = `${result.slice(0, maxDiffChars)}\n\n... [diff truncado a ${maxDiffChars} caracteres]`
     }
-    return result || "(sin cambios detectados por git)"
+    return { text: result, kind: "diff" }
   }
 
-  const criticPrompt = (original: string, diff: string) =>
-    [
+  const criticPrompt = (original: string, diff: Diff) => {
+    const lines = [
       "Revisa los cambios del actor para esta tarea y emite tu veredicto.",
       "Tienes acceso de lectura al repositorio: abre los archivos que necesites",
       "para verificar el contexto, pero basa tu revisión en el diff mostrado.",
@@ -186,11 +277,33 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
       "REQUISITOS ORIGINALES:",
       original || "(no capturados; revisa el diff)",
       "",
-      "DIFF DE LOS CAMBIOS:",
-      diff,
-      "",
-      "Responde con el formato VEREDICTO/HALLAZGOS.",
-    ].join("\n")
+    ]
+
+    if (diff.kind === "empty") {
+      lines.push(
+        "AVISO — SIN CAMBIOS: git no detecta ninguna modificación ni archivo nuevo.",
+        "Esto no es automáticamente un fallo; decide según los requisitos:",
+        "- Si la tarea pedía implementar, corregir o refactorizar código, el actor",
+        "  no hizo el trabajo → exige cambios con un hallazgo [critico].",
+        "- Si la tarea era solo informativa (explicar, analizar, responder), no hay",
+        "  código que revisar y puedes aprobar.",
+        "- Si el actor afirma haber cambiado algo con el diff vacío, compruébalo con",
+        "  `git status` y `git log -1`: pudo haber commiteado o trabajado en otro",
+        "  directorio. Reporta lo que encuentres.",
+        "",
+      )
+    } else if (diff.kind === "statsonly") {
+      lines.push(
+        "AVISO — DIFF SIN CONTENIDO: solo se obtuvo la lista de archivos tocados,",
+        "no su contenido. Ábrelos con `read` antes de opinar; no emitas veredicto",
+        "sin haber visto el código real.",
+        "",
+      )
+    }
+
+    lines.push("DIFF DE LOS CAMBIOS:", diff.text, "", "Responde con el formato VEREDICTO/HALLAZGOS.")
+    return lines.join("\n")
+  }
 
   const fixPrompt = (critique: string) =>
     [
@@ -209,6 +322,7 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
 
     if (last.info.error) {
       st.done = true
+      await markVerdict(actorSessionID, st, false)
       await toast("El modelo devolvió un error; se detiene el bucle.", "error")
       return
     }
@@ -220,6 +334,7 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
     )
     if (!criticSessionID) {
       st.done = true
+      await markVerdict(actorSessionID, st, false)
       await toast("No se pudo crear la sesión del crítico.", "error")
       return
     }
@@ -232,18 +347,24 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
 
   const processCritique = async (criticSessionID: string, actorSessionID: string, st: State) => {
     const last = await lastAssistant(criticSessionID)
-
-    if (!keepCriticSession) await deleteSession(criticSessionID)
     criticToActor.delete(criticSessionID)
+
+    const discard = async () => {
+      if (!keepCriticSession) await deleteSession(criticSessionID)
+    }
 
     if (!last) {
       st.done = true
+      await discard()
+      await markVerdict(actorSessionID, st, false)
       await toast("El crítico no devolvió respuesta; se detiene el bucle.", "error")
       return
     }
 
     if (approved(last.text)) {
       st.done = true
+      await discard()
+      await markVerdict(actorSessionID, st, true)
       await toast(`Aprobado tras ${st.iterations} iteración(es).`, "success")
       return
     }
@@ -251,6 +372,9 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
     st.iterations += 1
     if (st.iterations > maxIterations) {
       st.done = true
+      // En modo bloqueante la revisión NO se borra: conserva los hallazgos
+      // abiertos para poder auditar por qué se rechazó la tarea.
+      await markVerdict(actorSessionID, st, false)
       await toast(
         `Sin aprobación tras ${maxIterations} iteraciones; revisa los hallazgos.`,
         "warning",
@@ -258,6 +382,7 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
       return
     }
 
+    await discard()
     st.awaiting = "actor"
     await send(actorSessionID, actorAgent, fixPrompt(last.text), actorModel)
   }
@@ -270,6 +395,7 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
 
     if (last.info.error) {
       st.done = true
+      await markVerdict(sessionID, st, false)
       await toast("El modelo devolvió un error; se detiene el bucle.", "error")
       return
     }
@@ -286,6 +412,7 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
 
     if (approved(last.text)) {
       st.done = true
+      await markVerdict(sessionID, st, true)
       await toast(`Aprobado tras ${st.iterations} iteración(es).`, "success")
       return
     }
@@ -293,6 +420,7 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
     st.iterations += 1
     if (st.iterations > maxIterations) {
       st.done = true
+      await markVerdict(sessionID, st, false)
       await toast(
         `Sin aprobación tras ${maxIterations} iteraciones; revisa los hallazgos.`,
         "warning",

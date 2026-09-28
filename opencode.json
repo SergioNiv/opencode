@@ -62,7 +62,7 @@
         "apiKey": "{file:./.secrets/qwen-api-key}"
       },
       "models": {
-        "qwen3.8-max": {
+        "qwen3.8-max-0902": {
           "name": "Qwen3.8 Max (thinking)",
           "reasoning": true,
           "options": { 
