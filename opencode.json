@@ -48,8 +48,9 @@
         "actorAgent": "actor-managed",
         "criticAgent": "critic",
         "inlineActorAgent": "actor-managed-inline",
-        "maxDiffChars": 40000,
-        "keepCriticSession": false
+        "maxDiffChars": 20000,
+        "maxContextChars": 4000,
+        "keepCriticSession": true
       }
     ]
   ],
@@ -62,12 +63,12 @@
         "apiKey": "{file:./.secrets/qwen-api-key}"
       },
       "models": {
-        "qwen3.8-max-0902": {
+        "qwen3.8-max": {
           "name": "Qwen3.8 Max (thinking)",
           "reasoning": true,
-          "options": { 
+          "options": {
             "enable_thinking": true,
-            "reasoningEffort": "high"
+            "reasoningEffort": "medium"
           },
           "limit": { "context": 1000000, "output": 128000 }
         }

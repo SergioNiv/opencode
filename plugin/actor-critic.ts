@@ -11,6 +11,7 @@ type Options = {
   inlineCriticModel?: string
   maxIterations?: number
   maxDiffChars?: number
+  maxContextChars?: number
   keepCriticSession?: boolean
 }
 
@@ -21,7 +22,10 @@ const toModelRef = (value?: string): { providerID: string; modelID: string } | u
   return { providerID: value.slice(0, i), modelID: value.slice(i + 1) }
 }
 
-type Mode = "session" | "inline"
+type Mode = "session" | "inline" | "waiting"
+
+const errorMessage = (error: any): string =>
+  error?.data?.message ?? error?.message ?? error?.name ?? "error desconocido"
 
 /** `diff` = hay contenido; `statsonly` = solo lista de archivos; `empty` = nada. */
 type Diff = { text: string; kind: "diff" | "statsonly" | "empty" }
@@ -69,6 +73,7 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
   const inlineCriticModel = toModelRef(opts.inlineCriticModel)
   const maxIterations = opts.maxIterations ?? 3
   const maxDiffChars = opts.maxDiffChars ?? 40000
+  const maxContextChars = opts.maxContextChars ?? 4000
   const keepCriticSession = opts.keepCriticSession ?? false
   const { client, directory, $ } = input
 
@@ -268,7 +273,53 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
     return { text: result, kind: "diff" }
   }
 
-  const criticPrompt = (original: string, diff: Diff) => {
+  // Contexto económico de la tarea: los mensajes de usuario (requisito,
+  // aclaraciones, plan) más el último mensaje del actor (su resumen/intención).
+  // El crítico es de nube y caro: no se le pasa la transcripción completa.
+  const sessionContext = async (sessionID: string): Promise<string> => {
+    try {
+      const res: any = await client.session.messages({
+        path: { id: sessionID },
+        query: { directory },
+      })
+      const list: any[] = res?.data ?? []
+      const userLines: string[] = []
+      let lastActor = ""
+      for (const entry of list) {
+        const info = entry?.info
+        if (!info) continue
+        const text = readText(entry.parts)
+        if (!text) continue
+        // En modo inline el prompt del propio crítico vive en la misma sesión:
+        // no se debe auto-incluir (aportaría el diff anterior de balde).
+        if (info.role === "user" && info.agent !== criticAgent && info.agent !== inlineCriticAgent) {
+          userLines.push(text)
+        } else if (info.role === "assistant" && !info.summary) {
+          lastActor = text
+        }
+      }
+      const parts: string[] = []
+      userLines.forEach((text) => parts.push(`[usuario] ${text}`))
+      if (lastActor) parts.push(`[actor] ${lastActor}`)
+      if (!parts.length) return ""
+      let result = parts.join("\n\n")
+      if (result.length > maxContextChars) {
+        // Conserva el inicio (requisito + aclaraciones) y el final (resumen
+        // del actor); el trabajo intermedio no le interesa al crítico.
+        const head = Math.floor(maxContextChars * 0.6)
+        const tail = Math.max(0, maxContextChars - head - 40)
+        result =
+          result.slice(0, head) +
+          `\n\n... [contexto truncado a ${maxContextChars} caracteres] ...\n\n` +
+          result.slice(result.length - tail)
+      }
+      return result
+    } catch {
+      return ""
+    }
+  }
+
+  const criticPrompt = async (original: string, diff: Diff, context: string) => {
     const lines = [
       "Revisa los cambios del actor para esta tarea y emite tu veredicto.",
       "Tienes acceso de lectura al repositorio: abre los archivos que necesites",
@@ -278,6 +329,15 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
       original || "(no capturados; revisa el diff)",
       "",
     ]
+
+    if (context) {
+      lines.push(
+        "CONTEXTO DE LA TAREA (mensajes de usuario y resumen del actor; incluye",
+        "decisiones y aclaraciones que el diff por sí solo no muestra):",
+        context,
+        "",
+      )
+    }
 
     if (diff.kind === "empty") {
       lines.push(
@@ -340,9 +400,10 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
     }
 
     const diff = await collectDiff(actorSessionID)
+    const context = await sessionContext(actorSessionID)
     criticToActor.set(criticSessionID, actorSessionID)
     st.awaiting = "critic"
-    await send(criticSessionID, criticAgent, criticPrompt(st.original, diff), criticModel)
+    await send(criticSessionID, criticAgent, await criticPrompt(st.original, diff, context), criticModel)
   }
 
   const processCritique = async (criticSessionID: string, actorSessionID: string, st: State) => {
@@ -358,6 +419,17 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
       await discard()
       await markVerdict(actorSessionID, st, false)
       await toast("El crítico no devolvió respuesta; se detiene el bucle.", "error")
+      return
+    }
+
+    // Si la llamada al modelo del crítico falló (cuota, red, API), el último
+    // mensaje tiene `error` y sin texto: reenviar una crítica vacía al actor
+    // solo encadena turnos sin sentido. Se detiene el bucle con el motivo.
+    if (last.info.error || !last.text) {
+      st.done = true
+      await discard()
+      await markVerdict(actorSessionID, st, false)
+      await toast(`El crítico falló (${short(errorMessage(last.info.error), 120)}); se detiene el bucle.`, "error")
       return
     }
 
@@ -401,14 +473,24 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
     }
 
     const diff = await collectDiff(sessionID)
+    const context = await sessionContext(sessionID)
     st.awaiting = "critic"
-    await send(sessionID, inlineCriticAgent, criticPrompt(st.original, diff), inlineCriticModel)
+    await send(sessionID, inlineCriticAgent, await criticPrompt(st.original, diff, context), inlineCriticModel)
   }
 
   const processCritiqueInline = async (sessionID: string, st: State) => {
     const last = await lastAssistant(sessionID)
     if (!last || last.info.id === st.lastAssistantID) return
     st.lastAssistantID = last.info.id
+
+    // Mismo caso que en modo sesión: la llamada al crítico falló y no hay
+    // crítica real que inyectar.
+    if (last.info.error || !last.text) {
+      st.done = true
+      await markVerdict(sessionID, st, false)
+      await toast(`El crítico falló (${short(errorMessage(last.info.error), 120)}); se detiene el bucle.`, "error")
+      return
+    }
 
     if (approved(last.text)) {
       st.done = true
@@ -434,23 +516,43 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
 
   return {
     "chat.message": async (msg, output) => {
-      const mode: Mode | undefined =
+      const text = readText(output.parts as any[])
+      const actorMode: Mode | undefined =
         inlineActorAgent && msg.agent === inlineActorAgent
           ? "inline"
           : msg.agent === actorAgent
             ? "session"
             : undefined
-      if (!mode) return
       const existing = states.get(msg.sessionID)
-      if (existing && !existing.done) return
-      states.set(msg.sessionID, {
-        mode,
-        original: readText(output.parts as any[]),
-        iterations: 0,
-        awaiting: "actor",
-        done: false,
-        processing: false,
-      })
+      if (!existing) {
+        // El requisito suele formularse bajo otro agente (p. ej. modo plan);
+        // se captura el primer mensaje de usuario de la sesión como original,
+        // y el modo se resuelve cuando llegue un mensaje del actor.
+        states.set(msg.sessionID, {
+          mode: actorMode ?? "waiting",
+          original: text,
+          iterations: 0,
+          awaiting: "actor",
+          done: false,
+          processing: false,
+        })
+        return
+      }
+      if (!actorMode) return
+      if (existing.mode === "waiting") {
+        existing.mode = actorMode
+        return
+      }
+      if (existing.done) {
+        states.set(msg.sessionID, {
+          mode: actorMode,
+          original: text,
+          iterations: 0,
+          awaiting: "actor",
+          done: false,
+          processing: false,
+        })
+      }
     },
 
     event: async ({ event }) => {
@@ -473,7 +575,9 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
       }
 
       const st = states.get(sessionID)
-      if (!st || st.done || st.processing) return
+      // "waiting": sesión con requisito capturado pero sin mensaje del actor
+      // todavía; no hay nada que revisar.
+      if (!st || st.done || st.processing || st.mode === "waiting") return
 
       if (st.mode === "inline") {
         if (st.awaiting === "actor") {
