@@ -1,10 +1,8 @@
 ---
 description: Crítico/Evaluador del patrón Actor-Crítico. Revisa el trabajo del actor contra los requisitos, verifica ejecutando tests/build/lint, enumera fallos con severidad y emite un veredicto bloqueante. Úsalo SIEMPRE para revisar cambios antes de terminarlos.
 mode: all
-model: qwen-alibaba/qwen3.8-max
-options:
-  enable_thinking: true
-  reasoningEffort: medium
+model: deepseek/deepseek-flash
+variant: max
 temperature: 0.1
 permission:
   edit: deny
