@@ -20,9 +20,10 @@ variantes no es el crítico, sino **cómo el plugin lo invoca**.
 
 Hay **dos variantes** del mismo patrón:
 
-1. **Variante 1 — plugin, sesión hija (automática):** el plugin engancha el
-   final de cada turno del Actor y lanza al Crítico en una **sesión hija**
-   desechable, en bucle, hasta que aprueba. No depende del modelo local.
+1. **Variante 1 — plugin, sesión de primer nivel (automática):** el plugin engancha el
+   final de cada turno del Actor y lanza al Crítico en una **sesión separada de
+   primer nivel** (desechable por defecto), en bucle, hasta que aprueba. No depende
+   del modelo local.
 2. **Variante 2 — plugin, misma sesión (automática):** igual que la 1, pero el
    plugin **inyecta el prompt del Crítico en la propia sesión del Actor**, así
    que ves el prompt y la respuesta en la UI.
@@ -44,7 +45,7 @@ Hay **dos variantes** del mismo patrón:
 
 ---
 
-## Variante 1 — plugin, sesión hija (automática)
+## Variante 1 — plugin, sesión de primer nivel (automática)
 
 **Archivos**
 
@@ -61,20 +62,23 @@ El plugin escucha los eventos de opencode:
 1. Con `chat.message` **arma** el bucle cuando detecta un mensaje dirigido al
    agente `actor-managed` (guarda los requisitos originales).
 2. Con `event: session.idle` detecta que el Actor terminó su turno, calcula el
-   **diff** (`git diff`, o resumen vía `session.diff`) y crea una **sesión hija**
-   del Crítico con título `[critic] revisión N — <tarea>`.
-3. Lanza al Crítico en esa sesión hija con solo **requisitos + diff** (no el
-   historial completo del Actor).
-4. Cuando el Crítico termina, lee su veredicto y **borra la sesión hija**
-   automáticamente:
+   **diff** (`git diff`, o resumen vía `session.diff`) y crea una **sesión de
+   primer nivel** del Crítico con título `[critic] revisión N — <tarea>`.
+   3. Lanza al Crítico en esa sesión con solo **requisitos + diff** (no el
+      historial completo del Actor).
+   4. Cuando el Crítico termina, lee su veredicto y **borra la sesión del crítico**
+      (salvo `keepCriticSession: true`):
    - `VEREDICTO: APROBADO` → termina y muestra un toast de éxito.
    - `CAMBIOS REQUERIDOS` → reinyecta la crítica al Actor y repite.
 5. Se detiene al aprobar o al superar `maxIterations`, con un toast.
 
-**Por qué una sesión hija:** el input del Crítico queda **acotado** (requisitos
-+ diff + lo que lea), en lugar de crecer con todo el historial del Actor. Así se
-gastan menos tokens cloud. La hija es desechable y se borra tras cada revisión,
-de modo que solo te queda la sesión **padre** (la del Actor) para continuar.
+**Por qué una sesión separada:** el input del Crítico queda **acotado**
+(requisitos + diff + lo que lea), en lugar de crecer con todo el historial del
+Actor. Así se gastan menos tokens cloud. Esa sesión es **de primer nivel** (sin
+`parent_id`), por lo que aparece en el listado/TUI; por defecto se borra tras cada
+revisión (salvo `keepCriticSession: true`), de modo que solo te queda la sesión
+del Actor para continuar. Ver [parche-actor-critic.md](./parche-actor-critic.md)
+(cambio 2).
 
 **Uso**
 
@@ -108,7 +112,7 @@ de modo que solo te queda la sesión **padre** (la del Actor) para continuar.
 | `actorModel`         | (el del agente) | Fuerza el modelo del Actor (formato `proveedor/modelo`).           |
 | `criticModel`        | (el del agente) | Fuerza el modelo del Crítico (formato `proveedor/modelo`).         |
 | `maxDiffChars`       | `40000`         | Tamaño máximo del diff enviado al crítico (se trunca si excede).   |
-| `keepCriticSession`  | `false`         | Si `true`, no borra la sesión hija del crítico (útil para depurar).|
+| `keepCriticSession`  | `false`         | Si `true`, no borra la sesión del crítico (útil para depurar).|
 
 > `actorModel`/`criticModel` son **opcionales**: si los omites, se usa el `model:`
 > definido en el archivo del agente. Al forzarlos aquí, ten en cuenta que la
@@ -119,12 +123,13 @@ gasta menos tokens cloud (input del crítico acotado). A cambio, el crítico sol
 juzga el resultado (el diff), no el proceso intermedio. Requiere que el plugin
 esté registrado y que opencode se reinicie.
 
-**Sobre las sesiones:** las hijas del crítico son de tipo “hija” (llevan
-`parentID`), no aparecen como sesiones sueltas del proyecto y se **borran**
-automáticamente tras cada revisión. Para continuar una tarea, retoma siempre la
-sesión **padre** (donde escribiste el mensaje). Si activas
-`keepCriticSession: true` para depurar, aparecerán con el título
-`[critic] revisión N — …`; bórralas a mano cuando termines.
+**Sobre las sesiones:** las sesiones del crítico son **de primer nivel**
+(sin `parent_id`), por lo que **aparecen** en `opencode session list`/TUI. Se
+**borran** automáticamente tras cada revisión salvo que `keepCriticSession: true`.
+Para continuar una tarea, retoma la sesión del Actor (donde escribiste el
+mensaje). Con `keepCriticSession: true` quedarán con el título
+`[critic] revisión N — …`; bórralas a mano cuando termines. (Antes eran hijas y
+quedaban ocultas; ver [parche-actor-critic.md](./parche-actor-critic.md), cambio 2.)
 
 ---
 
@@ -188,7 +193,7 @@ sesión **padre** (donde escribiste el mensaje). Si activas
 
 ## ¿Cuál elegir?
 
-- Priorizas gastar menos tokens cloud → **Variante 1** (crítico en sesión hija).
+- Priorizas gastar menos tokens cloud → **Variante 1** (crítico en sesión de primer nivel).
 - Prefieres **ver el prompt del crítico** en la UI → **Variante 2** (misma sesión).
 - Ambas conviven: `/acp` usa la variante 1 y `/acpi` la variante 2.
 

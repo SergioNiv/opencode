@@ -1,4 +1,20 @@
 import type { Plugin } from "@opencode-ai/plugin"
+import fs from "node:fs"
+import { fileURLToPath } from "node:url"
+
+// Diagnóstico opcional (off por defecto): con ACTOR_CRITIC_DEBUG=1 escribe a
+// /tmp/actor-critic-debug.log. Se usa para detectar si opencode entrega las
+// opciones al plugin (ver docs/upgrade-checklist.md).
+const DEBUG_LOG = "/tmp/actor-critic-debug.log"
+const DEBUG = process.env.ACTOR_CRITIC_DEBUG === "1" || process.env.ACTOR_CRITIC_DEBUG === "true"
+const dbg = (msg: string) => {
+  if (!DEBUG) return
+  try {
+    fs.appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] ${msg}\n`)
+  } catch {
+    /* el logging nunca debe romper el plugin */
+  }
+}
 
 type Options = {
   actorAgent?: string
@@ -13,6 +29,23 @@ type Options = {
   maxDiffChars?: number
   maxContextChars?: number
   keepCriticSession?: boolean
+}
+
+// opencode 1.18.33 no entrega las opciones de la tupla al plugin: `rawOptions`
+// llega `undefined` aunque el config tenga `["plugin.ts", {…}]` (verificado en el
+// binario: el schema `Spec = Union(String, Tuple(String, Record))` sí conserva la
+// tupla, pero el servicio de plugin no la pasa). Como fuente de verdad se usa un
+// archivo co-ubicado con el plugin; se complementa con las opciones nativas (si
+// alguna versión futura las entrega, ganan por clave) y, para keepCriticSession,
+// con el env ACTOR_CRITIC_KEEP_CRITIC_SESSION (1/true) como prioridad máxima.
+const SIDE_CAR = fileURLToPath(new URL("./actor-critic.options.json", import.meta.url))
+
+const loadSidecarOptions = (): Partial<Options> => {
+  try {
+    return JSON.parse(fs.readFileSync(SIDE_CAR, "utf8")) as Partial<Options>
+  } catch {
+    return {}
+  }
 }
 
 const toModelRef = (value?: string): { providerID: string; modelID: string } | undefined => {
@@ -62,7 +95,11 @@ const short = (text: string, max = 40): string => {
 }
 
 const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
-  const opts = (rawOptions ?? {}) as Options
+  // native (rawOptions) tiene prioridad sobre el sidecar por clave; el env
+  // ACTOR_CRITIC_KEEP_CRITIC_SESSION, si está definido, pisa keepCriticSession.
+  const opts: Options = { ...loadSidecarOptions(), ...(rawOptions ?? {}) }
+  const envKeep = process.env.ACTOR_CRITIC_KEEP_CRITIC_SESSION
+  if (envKeep !== undefined) opts.keepCriticSession = envKeep === "1" || envKeep === "true"
   const actorAgent = opts.actorAgent ?? "actor-managed"
   const criticAgent = opts.criticAgent ?? "critic"
   const inlineActorAgent = opts.inlineActorAgent
@@ -76,6 +113,10 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
   const maxContextChars = opts.maxContextChars ?? 4000
   const keepCriticSession = opts.keepCriticSession ?? false
   const { client, directory, $ } = input
+
+  // rawOptions=undefined  → opencode aún no entrega opciones (sidecar manda)
+  // rawOptions={"…"}      → opencode ya las entrega (nativo manda)
+  dbg(`INIT keepCriticSession=${keepCriticSession} rawOptions=${JSON.stringify(rawOptions)}`)
 
   const states = new Map<string, State>()
   const criticToActor = new Map<string, string>()
@@ -130,15 +171,20 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
     iteration: number,
     original: string,
   ): Promise<string | undefined> => {
+    // Sin parentID: las sesiones hija (parent_id != null) las oculta la lista de
+    // sesiones (CLI `session list` y TUI, que filtran por `parent_id IS NULL`),
+    // así que el crítico sería invisible. Con parent_id=null aparece como sesión
+    // de primer nivel y se puede abrir/inspeccionar. El flujo del plugin no depende
+    // de parent_id (usa su propio Map `criticToActor`).
     const res: any = await client.session.create({
       query: { directory },
       body: {
-        parentID: actorSessionID,
         title: `[critic] revisión ${iteration} — ${short(original)}`,
       },
     })
     const session = res?.data ?? res
-    return session?.id
+    const id = session?.id
+    return id
   }
 
   const deleteSession = async (sessionID: string) => {
@@ -441,8 +487,10 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
       return
     }
 
+    // >= (no >): con maxIterations=N se crean exactamente N sesiones del
+    // crítico; el N-ésimo rechazo detiene el bucle en vez de encolar un N+1.
     st.iterations += 1
-    if (st.iterations > maxIterations) {
+    if (st.iterations >= maxIterations) {
       st.done = true
       // En modo bloqueante la revisión NO se borra: conserva los hallazgos
       // abiertos para poder auditar por qué se rechazó la tarea.
@@ -499,8 +547,9 @@ const ActorCriticPlugin: Plugin = async (input, rawOptions) => {
       return
     }
 
+    // >= (no >): con maxIterations=N se hacen exactamente N rondas de revisión.
     st.iterations += 1
-    if (st.iterations > maxIterations) {
+    if (st.iterations >= maxIterations) {
       st.done = true
       await markVerdict(sessionID, st, false)
       await toast(
