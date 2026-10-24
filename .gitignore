@@ -2,5 +2,6 @@ node_modules
 package-lock.json
 bun.lock
 .secrets/
+service.json
 *.log
 *.bak

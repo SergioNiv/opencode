@@ -1,155 +1,86 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "permission": {
-    "*": "allow",
-    "doom_loop": "ask",
-    "external_directory": {
-      "*": "allow",
-      "~/.ssh/**": "deny",
-      "~/.aws/**": "deny",
-      "~/.gnupg/**": "deny",
-      "~/.config/gh/**": "deny",
-      "~/.docker/config.json": "deny",
-      "~/.netrc": "deny"
-    },
-    "task": {
-      "*": "allow",
-      "critic": "deny"
-    },
-    "bash": {
-      "*": "allow",
-      "rm -rf *": "deny",
-      "rm -fr *": "deny",
-      "rm -r *": "deny",
-      "sudo rm *": "deny",
-      "git push --force*": "deny",
-      "git push -f *": "deny",
-      "git push * --force*": "deny",
-      "git push * -f *": "deny",
-      "git reset --hard*": "deny",
-      "git clean -f*": "deny",
-      "git clean * -f*": "deny",
-      "dd *": "deny",
-      "mkfs*": "deny",
-      "shutdown*": "deny",
-      "reboot*": "deny",
-      "poweroff*": "deny",
-      "chown -R *": "deny",
-      "chmod -R *": "deny",
-      "* | sh*": "deny",
-      "* | bash*": "deny"
-    }
-  },
-  "plugin": [
-    [
-      "./plugin/actor-critic.ts",
-      {
-        "maxIterations": 3,
-        "actorAgent": "actor-managed",
-        "criticAgent": "critic",
-        "inlineActorAgent": "actor-managed-inline",
-        "maxDiffChars": 20000,
-        "maxContextChars": 4000,
-        "keepCriticSession": true
-      }
-    ]
+  "permissions": [
+    { "action": "external_directory", "resource": "~/.ssh/*", "effect": "deny" },
+    { "action": "external_directory", "resource": "~/.aws/*", "effect": "deny" },
+    { "action": "external_directory", "resource": "~/.gnupg/*", "effect": "deny" },
+    { "action": "external_directory", "resource": "~/.config/gh/*", "effect": "deny" },
+    { "action": "external_directory", "resource": "~/.docker/config.json", "effect": "deny" },
+    { "action": "external_directory", "resource": "~/.netrc", "effect": "deny" },
+    { "action": "shell", "resource": "rm -rf *", "effect": "deny" },
+    { "action": "shell", "resource": "rm -fr *", "effect": "deny" },
+    { "action": "shell", "resource": "rm -r *", "effect": "deny" },
+    { "action": "shell", "resource": "sudo rm *", "effect": "deny" },
+    { "action": "shell", "resource": "git push --force*", "effect": "deny" },
+    { "action": "shell", "resource": "git push -f *", "effect": "deny" },
+    { "action": "shell", "resource": "git push * --force*", "effect": "deny" },
+    { "action": "shell", "resource": "git push * -f *", "effect": "deny" },
+    { "action": "shell", "resource": "git reset --hard*", "effect": "deny" },
+    { "action": "shell", "resource": "git clean -f*", "effect": "deny" },
+    { "action": "shell", "resource": "git clean * -f*", "effect": "deny" },
+    { "action": "shell", "resource": "dd *", "effect": "deny" },
+    { "action": "shell", "resource": "mkfs*", "effect": "deny" },
+    { "action": "shell", "resource": "shutdown*", "effect": "deny" },
+    { "action": "shell", "resource": "reboot*", "effect": "deny" },
+    { "action": "shell", "resource": "poweroff*", "effect": "deny" },
+    { "action": "shell", "resource": "chown -R *", "effect": "deny" },
+    { "action": "shell", "resource": "chmod -R *", "effect": "deny" },
+    { "action": "shell", "resource": "* | sh*", "effect": "deny" },
+    { "action": "shell", "resource": "* | bash*", "effect": "deny" },
+    { "action": "subagent", "resource": "critic", "effect": "deny" }
   ],
-  "provider": {
-    "qwen-alibaba": {
-      "name": "Qwen (Alibaba Model Studio)",
-      "npm": "@ai-sdk/openai-compatible",
-      "options": {
-        "baseURL": "https://ws-ynqpf2qubkqf1vzl.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
-        "apiKey": "{file:./.secrets/qwen-api-key}"
-      },
-      "models": {
-        "qwen3.8-max": {
-          "name": "Qwen3.8 Max (thinking)",
-          "reasoning": true,
-          "options": {
-            "enable_thinking": true,
-            "reasoningEffort": "medium"
-          },
-          "limit": { "context": 1000000, "output": 128000 }
-        }
-      }
-    },
-    "deepseek": {
-      "npm": "@ai-sdk/openai-compatible",
-      "options": { 
-        "baseURL": "https://api.deepseek.com",
-        "apiKey": "{file:./.secrets/deepseek-api-key}"
-      },
-      "models": {
-        "deepseek-flash": {
-          "name": "deepseek-flash (multimodal)",
-          "attachment": true,
-          "modalities": { "input": ["text", "image"] },
-          "reasoning": true,
-          "options": { "reasoningEffort": "high" },
-          "variants": {
-            "max":  { "reasoningEffort": "max" },
-            "high": { "reasoningEffort": "high" },
-            "low":  { "reasoningEffort": "low" }
-          },
-          "limit": { "context": 1000000, "output": 384000 }
-        }
-      }
-    },
+  "providers": {
     "llama-local": {
       "name": "vllm (PC)",
-      "npm": "@ai-sdk/openai-compatible",
-      "options": {
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": {
         "baseURL": "http://192.168.68.108:8000/v1",
         "apiKey": "{file:./.secrets/vllm-api-key}"
       },
       "models": {
         "qwen3.8": {
           "name": "Qwen3.8 27B (multimodal)",
-          "attachment": true,
-          "modalities": { "input": ["text", "image"] },
-          "options": { "reasoningEffort": "medium" },
-          "variants": {
-            "max":    { "reasoningEffort": "xhigh" },
-            "medium": { "reasoningEffort": "medium" },
-            "low":    { "reasoningEffort": "low" }
+          "capabilities": {
+            "tools": true,
+            "input": ["text", "image"],
+            "output": ["text"],
+            "reasoning": { "supported": true }
           },
+          "settings": { "reasoningEffort": "medium" },
+          "body": { "temperature": 0.2 },
+          "variants": [
+            { "id": "max", "settings": { "reasoningEffort": "xhigh" } },
+            { "id": "medium", "settings": { "reasoningEffort": "medium" } },
+            { "id": "low", "settings": { "reasoningEffort": "low" } }
+          ],
           "limit": { "context": 128000, "output": 8192 }
-        },
-        "qwen3-32b": {
-          "name": "Qwen3 32B AWQ (solo texto)",
-          "limit": { "context": 31000, "output": 8192 }
         }
       }
     },
-    "llama-local-2": {
-      "name": "llama.cpp (Mac mini)",
-      "npm": "@ai-sdk/openai-compatible",
-      "options": {
-        "baseURL": "http://192.168.68.112:8080/v1"
+    "deepseek-direct": {
+      "name": "DeepSeek (Direct)",
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": {
+        "baseURL": "https://api.deepseek.com",
+        "apiKey": "{file:./.secrets/deepseek-api-key}"
       },
       "models": {
-        "Qwen2.5-Coder-7B-Instruct-4bit": {
-          "name": "Qwen2.5 Coder 7B (local)",
-          "limit": {
-            "context": 16384,
-            "output": 4096
+        "deepseek-flash": {
+          "name": "deepseek-flash (multimodal)",
+          "capabilities": {
+            "tools": true,
+            "input": ["text", "image"],
+            "output": ["text"],
+            "reasoning": { "supported": true }
           },
-          "options": {
-            "stop": ["<|im_end|>"],
-            "max_tokens": 2048
-          }
-        },
-        "Qwen2.5-7B-Instruct-4bit": {
-          "name": "Qwen2.5 7B (local)",
-          "limit": {
-            "context": 16384,
-            "output": 4096
-          },
-          "options": {
-            "stop": ["<|im_end|>"],
-            "max_tokens": 2048
-          }
+          "settings": { "reasoningEffort": "high" },
+          "body": { "temperature": 0.1 },
+          "variants": [
+            { "id": "max", "settings": { "reasoningEffort": "max" } },
+            { "id": "high", "settings": { "reasoningEffort": "high" } },
+            { "id": "low", "settings": { "reasoningEffort": "low" } }
+          ],
+          "limit": { "context": 1000000, "output": 384000 }
         }
       }
     }

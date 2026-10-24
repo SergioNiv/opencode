@@ -1,8 +1,9 @@
 {
-  "$schema": "https://opencode.ai/tui.json",
-  "theme": "monokai",
+  "$schema": "https://opencode.ai/v2/cli.json",
+  "theme": {
+    "name": "monokai"
+  },
   "attention": {
-    "enabled": true,
     "notifications": true,
     "sound": true,
     "volume": 0.4,
